@@ -1,0 +1,90 @@
+id: hw2
+namespace: zoomcamp
+
+inputs:
+  - id: taxi
+    type: SELECT
+    values: ["yellow", "green"]
+    defaults: "yellow"
+  - id: year
+    type: SELECT
+    values: ["2019", "2020", "2021"]
+    defaults: "2020"
+  - id: month
+    type: SELECT
+    values: ["01","02","03","04","05","06","07","08","09","10","11","12"]
+    defaults: "12"
+
+tasks:
+  - id: extract
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    outputFiles:
+      - "*.csv"
+    commands:
+      - |
+        # Logic to pick the correct date during Backfill
+        BAK_YEAR="{{ schedule.date ? schedule.date | date('yyyy') : inputs.year }}"
+        BAK_MONTH="{{ schedule.date ? schedule.date | date('MM') : inputs.month }}"
+        FILE="{{inputs.taxi}}_tripdata_${BAK_YEAR}-${BAK_MONTH}.csv"
+        
+        wget -qO- https://github.com/DataTalksClub/nyc-tlc-data/releases/download/{{inputs.taxi}}/${FILE}.gz \
+        | gunzip | tr -d '\r' | sed '1d' | sed "s/$/,$FILE/" > $FILE
+
+  - id: create_master_table
+    type: io.kestra.plugin.jdbc.postgresql.Query
+    url: jdbc:postgresql://postgres:5432/ny_taxi
+    username: postgres
+    password: postgres
+    sql: |
+      CREATE TABLE IF NOT EXISTS {{inputs.taxi}}_tripdata (
+          VendorID INT,
+          {{inputs.taxi == 'yellow' ? 'tpep_pickup_datetime' : 'lpep_pickup_datetime'}} TIMESTAMP,
+          {{inputs.taxi == 'yellow' ? 'tpep_dropoff_datetime' : 'lpep_dropoff_datetime'}} TIMESTAMP,
+          store_and_fwd_flag TEXT,
+          RatecodeID DOUBLE PRECISION,
+          PULocationID INT,
+          DOLocationID INT,
+          passenger_count DOUBLE PRECISION,
+          trip_distance DOUBLE PRECISION,
+          fare_amount DOUBLE PRECISION,
+          extra DOUBLE PRECISION,
+          mta_tax DOUBLE PRECISION,
+          tip_amount DOUBLE PRECISION,
+          tolls_amount DOUBLE PRECISION,
+          ehail_fee DOUBLE PRECISION, -- Green taxi specific
+          improvement_surcharge DOUBLE PRECISION,
+          total_amount DOUBLE PRECISION,
+          payment_type INT,
+          trip_type INT,             -- Green taxi specific
+          congestion_surcharge DOUBLE PRECISION,
+          filename TEXT
+      );
+
+  - id: purge_existing_data
+    type: io.kestra.plugin.jdbc.postgresql.Query
+    url: jdbc:postgresql://postgres:5432/ny_taxi
+    username: postgres
+    password: postgres
+    sql: |
+      /* We use the same logic here to delete the correct month */
+      DELETE FROM {{inputs.taxi}}_tripdata 
+      WHERE filename = '{{inputs.taxi}}_tripdata_{{ schedule.date ? schedule.date | date("yyyy") : inputs.year }}-{{ schedule.date ? schedule.date | date("MM") : inputs.month }}.csv';
+
+  - id: load_to_postgres
+    type: io.kestra.plugin.jdbc.postgresql.CopyIn
+    url: jdbc:postgresql://postgres:5432/ny_taxi
+    username: postgres
+    password: postgres
+    from: "{{outputs.extract.outputFiles[inputs.taxi ~ '_tripdata_' ~ (schedule.date ? schedule.date | date('yyyy') : inputs.year) ~ '-' ~ (schedule.date ? schedule.date | date('MM') : inputs.month) ~ '.csv']}}"
+    table: "{{inputs.taxi}}_tripdata"
+    format: CSV
+    header: false
+    delimiter: ","
+
+triggers:
+  - id: daily
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 9 1 * *"
+    timezone: America/New_York
