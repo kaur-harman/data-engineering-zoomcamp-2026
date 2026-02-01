@@ -1,3 +1,6 @@
+id: hw2
+namespace: zoomcamp
+
 inputs:
   - id: taxi
     type: SELECT
@@ -20,17 +23,18 @@ tasks:
     outputFiles:
       - "*.csv"
     commands:
-      - >
-        wget -qO- https://github.com/DataTalksClub/nyc-tlc-data/releases/download/{{inputs.taxi}}/{{inputs.taxi}}_tripdata_{{inputs.year}}-{{inputs.month}}.csv.gz 
-        | gunzip > {{inputs.taxi}}_tripdata_{{inputs.year}}-{{inputs.month}}.csv
+      - |
+        FILE="{{inputs.taxi}}_tripdata_{{inputs.year}}-{{inputs.month}}.csv"
+        wget -qO- https://github.com/DataTalksClub/nyc-tlc-data/releases/download/{{inputs.taxi}}/${FILE}.gz \
+        | gunzip | tr -d '\r' | sed '1d' | sed "s/$/,$FILE/" > $FILE
 
-  - id: create_monthly_table
+  - id: create_master_table
     type: io.kestra.plugin.jdbc.postgresql.Query
     url: jdbc:postgresql://postgres:5432/ny_taxi
     username: postgres
     password: postgres
     sql: |
-      CREATE TABLE IF NOT EXISTS {{inputs.taxi}}_tripdata_{{inputs.year}}_{{inputs.month}} (
+      CREATE TABLE IF NOT EXISTS {{inputs.taxi}}_tripdata (
           VendorID INT,
           {{inputs.taxi == 'yellow' ? 'tpep_pickup_datetime' : 'lpep_pickup_datetime'}} TIMESTAMP,
           {{inputs.taxi == 'yellow' ? 'tpep_dropoff_datetime' : 'lpep_dropoff_datetime'}} TIMESTAMP,
@@ -48,8 +52,18 @@ tasks:
           tolls_amount DOUBLE PRECISION,
           improvement_surcharge DOUBLE PRECISION,
           total_amount DOUBLE PRECISION,
-          congestion_surcharge DOUBLE PRECISION
+          congestion_surcharge DOUBLE PRECISION,
+          filename TEXT
       );
+
+  - id: purge_existing_data
+    type: io.kestra.plugin.jdbc.postgresql.Query
+    url: jdbc:postgresql://postgres:5432/ny_taxi
+    username: postgres
+    password: postgres
+    sql: |
+      DELETE FROM {{inputs.taxi}}_tripdata 
+      WHERE filename = '{{inputs.taxi}}_tripdata_{{inputs.year}}-{{inputs.month}}.csv';
 
   - id: load_to_postgres
     type: io.kestra.plugin.jdbc.postgresql.CopyIn
@@ -57,7 +71,7 @@ tasks:
     username: postgres
     password: postgres
     from: "{{outputs.extract.outputFiles[inputs.taxi ~ '_tripdata_' ~ inputs.year ~ '-' ~ inputs.month ~ '.csv']}}"
-    table: "{{inputs.taxi}}_tripdata_{{inputs.year}}_{{inputs.month}}"
+    table: "{{inputs.taxi}}_tripdata"
     format: CSV
-    header: true
+    header: false
     delimiter: ","
