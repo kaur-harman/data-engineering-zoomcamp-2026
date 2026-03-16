@@ -20,6 +20,7 @@ df = df[[
     "tip_amount",
     "total_amount"
 ]]
+df = df.fillna(0)
 
 t0 = time()
 
